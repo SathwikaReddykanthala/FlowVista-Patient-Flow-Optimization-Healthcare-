@@ -1,0 +1,7 @@
+Dept_Key,Dept_Name,Target_Wait_Min,Target_ALOS_Hours
+1,General Medicine,30,2
+2,Gastroenterology,45,3
+3,Cardiology,20,4
+4,Orthopedics,35,3
+5,Neurology,40,5
+6,Emergency,15,1
