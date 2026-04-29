@@ -209,6 +209,63 @@ def load_data():
 def generate_ai_insights(df):
 
     # =========================
+    # BASIC CLEANING
+    # =========================
+    df = df.copy()
+    df = df.dropna(subset=["visit_id"])
+
+    df["total_staff"] = df["total_staff"].fillna(0)
+    df["wait_duration_min"] = df["wait_duration_min"].fillna(0)
+
+    # =========================
+    # AGE GROUP CREATION
+    # =========================
+    bins = [0, 18, 60, 100]
+    labels = ["Child", "Adult", "Senior"]
+    df["age_group"] = pd.cut(df["age"], bins=bins, labels=labels)
+
+
+        # =========================
+    # TOTAL PATIENTS vs TOTAL STAFF (DEPT + AGE)
+    # =========================
+
+    group_df = df.groupby(["department_name", "age_group"]).agg(
+        total_patients=("visit_id", "count"),
+        total_staff=("total_staff", "mean")   # 🔥 TOTAL staff (not mean)
+    ).reset_index()
+
+    # Safe ratio
+    group_df["patient_staff_ratio"] = group_df.apply(
+        lambda x: x["total_patients"] / x["total_staff"]
+        if x["total_staff"] > 0 else None,
+        axis=1
+    )
+
+    st.dataframe(
+        group_df.style.format({
+            "patient_staff_ratio": "{:.2f}"
+        }),
+        width="stretch"
+    )
+
+
+
+    ratio_text = ""
+
+    for _, row in group_df.iterrows():
+        if pd.isna(row["patient_staff_ratio"]):
+            ratio_text += (
+                f"{row['department_name']} - {row['age_group']}: "
+                f"{row['total_patients']} patients, NO STAFF AVAILABLE\n"
+            )
+        else:
+            ratio_text += (
+                f"{row['department_name']} - {row['age_group']}: "
+                f"{row['total_patients']} patients, "
+                f"{row['total_staff']:.1f} staff, "
+                f"ratio {row['patient_staff_ratio']:.2f}\n"
+            )
+    # =========================
     # METRICS + RANGES
     # =========================
     wait = df["wait_duration_min"]
@@ -216,7 +273,10 @@ def generate_ai_insights(df):
     wait_p25 = wait.quantile(0.25)
     wait_p75 = wait.quantile(0.75)
 
-    staff_ratio = df["total_staff"] / df["visit_id"].replace(0,1)
+    staff_ratio = df.apply(
+        lambda x: x["total_staff"] / x["visit_id"] if x["visit_id"] != 0 else 0,
+        axis=1
+    )
     staff_avg = staff_ratio.mean()
     staff_p25 = staff_ratio.quantile(0.25)
     staff_p75 = staff_ratio.quantile(0.75)
@@ -232,11 +292,94 @@ def generate_ai_insights(df):
     dept_counts = df.groupby("department_name")["visit_id"].count()
     top_dept = dept_counts.idxmax()
 
+    
+
     # =========================
-    # PROMPT (ADVANCED STRUCTURE)
+    # PATIENT vs STAFF (ENHANCED)
+    # =========================
+
+    ratio_df = df.groupby(["department_name", "age_group"]).agg(
+        total_patients=("visit_id", "count"),
+        total_staff=("total_staff", "mean")
+    ).reset_index()
+
+    dept_totals = df.groupby("department_name").agg(
+        dept_total_patients=("visit_id", "count"),
+        dept_total_staff=("total_staff", "mean")
+    ).reset_index()
+
+    ratio_df = ratio_df.merge(dept_totals, on="department_name", how="left")
+
+    ratio_df["patient_staff_ratio"] = ratio_df.apply(
+        lambda x: x["total_patients"] / x["total_staff"]
+        if x["total_staff"] > 0 else None,
+        axis=1
+    )
+
+    ratio_df["dept_patient_staff_ratio"] = ratio_df.apply(
+        lambda x: x["dept_total_patients"] / x["dept_total_staff"]
+        if x["dept_total_staff"] > 0 else None,
+        axis=1
+    )
+    
+
+    variation_df = group_df.groupby("department_name").agg(
+        min_ratio=("patient_staff_ratio", "min"),
+        max_ratio=("patient_staff_ratio", "max")
+    ).reset_index()
+
+    variation_df["range"] = variation_df["max_ratio"] - variation_df["min_ratio"]
+
+    variation_text = ""
+
+    for _, row in variation_df.iterrows():
+        variation_text += (
+            f"{row['department_name']}: "
+            f"min {row['min_ratio']:.2f}, "
+            f"max {row['max_ratio']:.2f}, "
+            f"variation {row['range']:.2f}\n"
+        )
+
+    # =========================
+    # CONVERT TO TEXT FOR AI
+    # =========================
+    ratio_text = ""
+
+    for _, row in ratio_df.iterrows():
+
+        if pd.isna(row["patient_staff_ratio"]):
+            age_text = (
+                f"{row['department_name']} - {row['age_group']}: "
+                f"{row['total_patients']} patients, NO STAFF AVAILABLE"
+            )
+        else:
+            age_text = (
+                f"{row['department_name']} - {row['age_group']}: "
+                f"{row['total_patients']} patients, "
+                f"{row['total_staff']:.1f} staff, "
+                f"ratio {row['patient_staff_ratio']:.2f}"
+            )
+
+        if pd.isna(row["dept_patient_staff_ratio"]):
+            dept_text = (
+                f" | Department Total: {row['dept_total_patients']} patients, NO STAFF"
+            )
+        else:
+            dept_text = (
+                f" | Department Total: {row['dept_total_patients']} patients, "
+                f"{row['dept_total_staff']:.1f} staff, "
+                f"ratio {row['dept_patient_staff_ratio']:.2f}"
+            )
+
+        # ✅ FIXED: always append
+        ratio_text += age_text + dept_text + "\n"
+
+    # =========================
+    # PROMPT (moved outside loop)
     # =========================
     prompt = f"""
     You are a hospital analytics expert.
+
 
     DATA:
     Patient Volume Avg: {visit_avg:.2f} | Range: {visit_p25:.2f}-{visit_p75:.2f}
@@ -246,57 +389,94 @@ def generate_ai_insights(df):
     Bottleneck Stage: {bottleneck}
     Top Department: {top_dept}
 
-    OUTPUT FORMAT (STRICT):
+    Patient vs Staff by Department & Age:
+    {ratio_text}
+
+    IMPORTANT RULES:
+    - Strictly follow the format below
+    - Each label MUST be on a new line
+    - DO NOT combine Insight, Why, Recommendations in one line
+    - Use bullet points for recommendations
+    - Return in MARKDOWN format only
+
+    OUTPUT:
 
     ## 📊 Patient Volume
     Insight:
+
     Why:
+
     Recommendations:
-    - point 1
-    - point 2
+    - Point 1
+    - Point 2
 
     ## ⏳ Wait Time
     Insight:
+
     Why:
+
     Recommendations:
-    - point 1
-    - point 2
+    - Point 1
+    - Point 2
 
     ## 👩‍⚕️ Staffing Efficiency
     Insight:
+
     Why:
+
     Recommendations:
-    - point 1
-    - point 2
+    - Point 1
+    - Point 2
 
     ## 🚦 Bottleneck Analysis
     Insight:
+
     Why:
+
     Recommendations:
-    - point 1
-    - point 2
+    - Point 1
+    - Point 2
 
     ## 🏥 Department Demand
     Insight:
+
     Why:
+
     Recommendations:
-    - point 1
-    - point 2
+    - Point 1
+    - Point 2
+
+    ## 👥 Patient-Staff Distribution (Dept + Age)
+    Insight:
+
+    Why:
+    
+    Recommendations:
+    - Point 1
+    - Point 2
+
+    Patient vs Staff:
+    {ratio_text}
+
+    Variation across age groups:
+    {variation_text}
+
+    IMPORTANT:
+    - Mention actual numbers
+
+    - Do NOT say just "varies"
+    
+    - Show min, max, and difference
 
     ## 📌 Summary
     Provide a short overall summary
-
-    RULES:
-    - Keep explanations simple
-    - Be specific to the data
-    - Do not merge sections
     """
 
     try:
         response = client.chat.completions.create(
             model="llama-3.1-8b-instant",
             messages=[
-                {"role": "system", "content": "You are a healthcare analytics expert."},
+                {"role": "system", "content": "Healthcare analytics expert"},
                 {"role": "user", "content": prompt}
             ]
         )
@@ -305,7 +485,7 @@ def generate_ai_insights(df):
 
     except Exception as e:
         return f"⚠️ Error: {e}"
-    
+
 
 # ─────────────────────────────────────────────────────────────────────
 # HELPERS
