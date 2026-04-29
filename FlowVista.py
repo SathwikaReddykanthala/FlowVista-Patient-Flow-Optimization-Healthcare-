@@ -22,7 +22,7 @@ import os
 from dotenv import load_dotenv
 
 load_dotenv()
-#GROQ_API_KEY="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"
+
 
 client = Groq(api_key="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")
 
