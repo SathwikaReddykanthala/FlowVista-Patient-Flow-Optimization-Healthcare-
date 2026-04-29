@@ -14,12 +14,18 @@ from plotly.subplots import make_subplots
 import warnings
 
 warnings.filterwarnings("ignore")
-from dotenv import load_dotenv
+
+
+
+from groq import Groq
 import os
+from dotenv import load_dotenv
 
+load_dotenv()
+#GROQ_API_KEY="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"
 
-load_dotenv(dotenv_path=".env")
-print("KEY:", os.getenv("OPENAI_API_KEY"))
+client = Groq(api_key="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")
+
 
 # ─────────────────────────────────────────────────────────────────────
 # PAGE CONFIG
@@ -198,6 +204,109 @@ def load_data():
     df.loc[df["Department"] == "Orthopedics", "Adjusted_Value"] *= 1.3
     df.loc[df["Department"] == "Emergency", "Adjusted_Value"] *= 0.4
     df.loc[df["Department"] == "General Medicine", "Adjusted_Value"] *= 1.8
+
+
+def generate_ai_insights(df):
+
+    # =========================
+    # METRICS + RANGES
+    # =========================
+    wait = df["wait_duration_min"]
+    wait_avg = wait.mean()
+    wait_p25 = wait.quantile(0.25)
+    wait_p75 = wait.quantile(0.75)
+
+    staff_ratio = df["total_staff"] / df["visit_id"].replace(0,1)
+    staff_avg = staff_ratio.mean()
+    staff_p25 = staff_ratio.quantile(0.25)
+    staff_p75 = staff_ratio.quantile(0.75)
+
+    visits = df.groupby("date")["visit_id"].count()
+    visit_avg = visits.mean()
+    visit_p25 = visits.quantile(0.25)
+    visit_p75 = visits.quantile(0.75)
+
+    stage_counts = df.groupby("stage")["visit_id"].count()
+    bottleneck = stage_counts.idxmax()
+
+    dept_counts = df.groupby("department_name")["visit_id"].count()
+    top_dept = dept_counts.idxmax()
+
+    # =========================
+    # PROMPT (ADVANCED STRUCTURE)
+    # =========================
+    prompt = f"""
+    You are a hospital analytics expert.
+
+    DATA:
+    Patient Volume Avg: {visit_avg:.2f} | Range: {visit_p25:.2f}-{visit_p75:.2f}
+    Wait Time Avg: {wait_avg:.2f} | Range: {wait_p25:.2f}-{wait_p75:.2f}
+    Staff Ratio Avg: {staff_avg:.2f} | Range: {staff_p25:.2f}-{staff_p75:.2f}
+
+    Bottleneck Stage: {bottleneck}
+    Top Department: {top_dept}
+
+    OUTPUT FORMAT (STRICT):
+
+    ## 📊 Patient Volume
+    Insight:
+    Why:
+    Recommendations:
+    - point 1
+    - point 2
+
+    ## ⏳ Wait Time
+    Insight:
+    Why:
+    Recommendations:
+    - point 1
+    - point 2
+
+    ## 👩‍⚕️ Staffing Efficiency
+    Insight:
+    Why:
+    Recommendations:
+    - point 1
+    - point 2
+
+    ## 🚦 Bottleneck Analysis
+    Insight:
+    Why:
+    Recommendations:
+    - point 1
+    - point 2
+
+    ## 🏥 Department Demand
+    Insight:
+    Why:
+    Recommendations:
+    - point 1
+    - point 2
+
+    ## 📌 Summary
+    Provide a short overall summary
+
+    RULES:
+    - Keep explanations simple
+    - Be specific to the data
+    - Do not merge sections
+    """
+
+    try:
+        response = client.chat.completions.create(
+            model="llama-3.1-8b-instant",
+            messages=[
+                {"role": "system", "content": "You are a healthcare analytics expert."},
+                {"role": "user", "content": prompt}
+            ]
+        )
+
+        return response.choices[0].message.content
+
+    except Exception as e:
+        return f"⚠️ Error: {e}"
+    
+
 # ─────────────────────────────────────────────────────────────────────
 # HELPERS
 # ─────────────────────────────────────────────────────────────────────
@@ -257,33 +366,34 @@ def page_executive(df):
     # ───────────── KPIs ─────────────
     active_patients = df["visit_id"].nunique()
     avg_wait = df["wait_duration_min"].mean()
-    TOTAL_CAPACITY = 246
-    capacity_pct = (active_patients / TOTAL_CAPACITY) * 100
+    #TOTAL_CAPACITY = 246
+    #capacity_pct = (active_patients / TOTAL_CAPACITY) * 100
 
-    nurse_ratio = df["total_staff"].sum() / active_patients if active_patients else 0
+    nurse_ratio = df["total_staff"] / df["visit_id"].replace(0, 1)
+    nurse_ratio = nurse_ratio.mean()
+
     alos = df["wait_duration_min"].mean() / 60  # convert to hours
 
     # KPI ROW 1
-    c1, c2, c3, c4 = st.columns(4)
+    c1, c2, c3 = st.columns(3)
 
     with c1:
         st.markdown(kpi_card("Active Patients", f"{int(active_patients)}"), unsafe_allow_html=True)
 
     with c2:
-        st.markdown(kpi_card("Capacity %", f"{capacity_pct:.2f}%"), unsafe_allow_html=True)
-
+        st.markdown(kpi_card("Nurse ratio", f"{nurse_ratio:.2f}"), unsafe_allow_html=True)
     with c3:
         st.markdown(kpi_card("Avg Wait Time", f"{avg_wait:.2f}"), unsafe_allow_html=True)
 
-    with c4:
-        st.markdown(kpi_card("Nurse Ratio", f"{nurse_ratio:.2f}"), unsafe_allow_html=True)
+    #with c4:
+        #st.markdown(kpi_card("Capacity %", f"{capacity_pct:.2f}%"), unsafe_allow_html=True)
 
     st.markdown("<br>", unsafe_allow_html=True)
 
     # KPI ROW 2
-    c5, c6 = st.columns(2)
+    c4, c5 = st.columns(2)
 
-    with c5:
+    with c4:
         st.markdown(kpi_card("ALOS (Hours)", f"{alos:.2f}"), unsafe_allow_html=True)
 
     if active_patients < 5000:
@@ -293,7 +403,7 @@ def page_executive(df):
     else:
         load = "High"
 
-    with c6:
+    with c5:
         st.markdown(kpi_card("Patient Load", load,), unsafe_allow_html=True)
         #with c6:
         #st.markdown(kpi_card("Capacity Used", f"{capacity_pct:.2f}%"), unsafe_allow_html=True)
@@ -368,150 +478,7 @@ def page_executive(df):
 
 
 
-    # ───────────── INSIGHTS ─────────────
-    st.markdown("---")
-    st.subheader("🔍 Executive Insights & Recommendations")
 
-    # 📊 Patient Load
-    if active_patients > 10000:
-        st.info(f"📈 High patient volume ({active_patients}) indicating strong demand.")
-        st.markdown("""
-        **👉 Suggestions:**
-        - Allocate additional staff during peak hours  
-        - Prioritize high-demand departments  
-        """)
-
-    # 🛏️ Capacity Utilization
-    if capacity_pct < 50:
-        st.warning(f"⚠️ Only {capacity_pct:.1f}% capacity utilized — underutilization detected.")
-        st.markdown("""
-        **👉 Suggestions:**
-        - Improve patient admission flow  
-        - Optimize bed allocation across departments  
-        - Promote underutilized services  
-        """)
-    elif capacity_pct > 85:
-        st.error(f"🚨 Capacity at {capacity_pct:.1f}% — overcrowding risk.")
-        st.markdown("""
-        **👉 Suggestions:**
-        - Add temporary beds or expand capacity  
-        - Speed up discharge process  
-        - Redirect patients to less crowded departments  
-        """)
-    else:
-        st.success(f"✅ Capacity utilization ({capacity_pct:.1f}%) is optimal.")
-        st.markdown("""
-        **👉 Suggestions:**
-        - Maintain current resource planning  
-        - Monitor trends regularly  
-        """)
-
-    # ⏳ Wait Time
-    if avg_wait > 30:
-        st.warning(f"⏳ Avg wait time is {avg_wait:.1f} mins — delays detected.")
-        st.markdown("""
-        **👉 Suggestions:**
-        - Improve triage prioritization  
-        - Increase staffing in peak hours  
-        - Streamline patient flow between stages  
-        """)
-    else:
-        st.success(f"⚡ Avg wait time ({avg_wait:.1f} mins) is within limits.")
-        st.markdown("""
-        **👉 Suggestions:**
-        - Maintain current process efficiency  
-        - Monitor for sudden spikes  
-        """)
-
-    # 👩‍⚕️ Staffing Insight
-    if nurse_ratio < 0.5:
-        st.error("👩‍⚕️ Low nurse coverage detected.")
-        st.markdown("""
-        **👉 Suggestions:**
-        - Hire or reallocate nursing staff  
-        - Reduce workload per nurse  
-        - Improve shift scheduling  
-        """)
-    elif nurse_ratio > 2:
-        st.warning("⚠️ Nurse ratio unusually high.")
-        st.markdown("""
-        **👉 Suggestions:**
-        - Reallocate excess staff to busy departments  
-        - Review staffing efficiency  
-        """)
-    else:
-        st.success("✅ Staffing levels are balanced.")
-        st.markdown("""
-        **👉 Suggestions:**
-        - Maintain current staffing strategy  
-        """)
-
-    # 🔄 Stage Bottleneck
-    top_stage = stage_df.iloc[0]["stage"]
-    top_count = stage_df.iloc[0]["visit_id"]
-
-    st.info(f"🔄 Highest load at **{top_stage}** stage ({top_count} visits).")
-    st.markdown("""
-    **👉 Suggestions:**
-    - Add resources to this stage  
-    - Reduce processing time  
-    - Introduce parallel workflows  
-    """)
-
-    # 🏥 Department Demand
-    top_dept = dept.sort_values(by="total_visits", ascending=False).iloc[0]
-
-    st.info(f"🏥 **{top_dept['department_name']}** has highest demand ({top_dept['total_visits']} visits).")
-    st.markdown("""
-    **👉 Suggestions:**
-    - Allocate more staff and beds to this department  
-    - Monitor wait times closely  
-    - Optimize scheduling and patient routing  
-    """)
-    
-    
-    if active_patients < 5000:
-        st.warning(f"⚠️ Patient load is LOW ({active_patients})")
-
-        st.markdown("""
-    **📊 Insight:**
-    - Hospital is underutilized  
-    - Available resources (beds/staff) are not fully used  
-
-    **👉 Recommendations:**
-    - Increase patient intake through outreach/referrals  
-    - Promote specialized services  
-    - Optimize resource allocation  
-    """)
-
-    elif active_patients <= 12000:
-        st.success(f"✅ Patient load is NORMAL ({active_patients})")
-
-        st.markdown("""
-    **📊 Insight:**
-    - Patient flow is balanced  
-    - Resources are being used efficiently  
-
-    **👉 Recommendations:**
-    - Maintain current operations  
-    - Monitor trends for sudden spikes  
-    - Focus on improving service quality  
-    """)
-
-    else:
-        st.error(f"🚨 Patient load is HIGH ({active_patients})")
-
-        st.markdown("""
-    **📊 Insight:**
-    - Hospital is experiencing high demand  
-    - Risk of increased wait time and staff overload  
-
-    **👉 Recommendations:**
-    - Increase staffing during peak hours  
-    - Optimize patient flow across departments  
-    - Prioritize critical cases  
-    - Consider expanding capacity temporarily  
-    """)
 
 # ─────────────────────────────────────────────────────────────────────
 # PAGE 2 —Bottleneck Diagnostics
@@ -596,79 +563,8 @@ def page_bottleneck(df):
 
 
 
-    # ───────────── INSIGHTS ─────────────
-    st.markdown("---")
-    st.subheader("🔍 Bottleneck Insights & Recommendations")
+ 
 
-    # ⚡ Throughput Insight
-    if throughput < 50:
-        st.warning(f"⚠️ Low throughput rate ({throughput:.1f}) — system is processing fewer patients.")
-        st.markdown("""
-        **👉 Suggestions:**
-        - Improve process efficiency across stages  
-        - Reduce delays in high-wait areas  
-        - Optimize staff allocation during peak hours  
-        """)
-    else:
-        st.success(f"✅ Throughput rate ({throughput:.1f}) is healthy.")
-        st.markdown("""
-        **👉 Suggestions:**
-        - Maintain current workflow efficiency  
-        - Monitor for sudden drops  
-        """)
-
-    # ⏳ Wait Time Insight
-    avg_wait_overall = dff["wait_duration_min"].mean()
-
-    if avg_wait_overall > 40:
-        st.error(f"🚨 High average wait time ({avg_wait_overall:.1f} mins) detected.")
-        st.markdown("""
-        **👉 Suggestions:**
-        - Improve triage prioritization  
-        - Add staff during peak hours  
-        - Reduce handoff delays between stages  
-        """)
-    else:
-        st.success(f"⚡ Average wait time ({avg_wait_overall:.1f} mins) is acceptable.")
-        st.markdown("""
-        **👉 Suggestions:**
-        - Continue monitoring performance  
-        - Maintain current staffing levels  
-        """)
-
-    # 🕒 Peak Hour Detection (from heatmap)
-    peak_hour = dff.groupby("hour")["wait_duration_min"].mean().idxmax()
-    peak_day = dff.groupby("day")["wait_duration_min"].mean().idxmax()
-
-    st.info(f"🕒 Peak delay observed on **{peak_day} at {peak_hour}:00 hrs**.")
-    st.markdown("""
-    **👉 Suggestions:**
-    - Increase staffing during peak hours  
-    - Pre-schedule high-demand services  
-    - Introduce fast-track queues for critical patients  
-    """)
-
-    # 🏥 Department Bottleneck
-    worst_dept = bubble.sort_values(by="avg_wait", ascending=False).iloc[0]
-
-    st.error(f"🚨 **{worst_dept['department_name']}** has highest wait time ({worst_dept['avg_wait']:.1f} mins).")
-    st.markdown("""
-    **👉 Suggestions:**
-    - Allocate more staff to this department  
-    - Investigate workflow inefficiencies  
-    - Reduce patient backlog with better scheduling  
-    """)
-
-    # 📊 High Load Department
-    top_volume_dept = bubble.sort_values(by="patient_volume", ascending=False).iloc[0]
-
-    st.info(f"📈 **{top_volume_dept['department_name']}** handles highest patient volume ({top_volume_dept['patient_volume']}).")
-    st.markdown("""
-    **👉 Suggestions:**
-    - Scale resources based on demand  
-    - Distribute patient load across departments  
-    - Monitor service time closely  
-    """)
 # ─────────────────────────────────────────────────────────────────────
 # PAGE 3 — Resource & Staffing
 
@@ -702,116 +598,95 @@ def page_staffing(df):
 
     # ───────────── KPI ─────────────
     active_patients = dff["is_active"].sum()
-    total_staff = dff["total_staff"].sum()
+ 
 
-    staff_ratio = total_staff / active_patients if active_patients else 0
+    avg_staff = dff["total_staff"].mean()
+
+    staff_ratio = avg_staff / active_patients if active_patients else 0
 
     st.markdown(kpi_card("Staff-Patient Ratio", f"{staff_ratio:.2f}"), unsafe_allow_html=True)
 
     st.markdown("<br>", unsafe_allow_html=True)
 
     # ───────────── STAFF vs WAIT TIME ─────────────
+
+
     section("Impact of Staffing on Wait Time")
 
-    import numpy as np
+    # =========================
+    # 🧪 Generate Wait Time
+    # =========================
 
     # Normalize factors
     load_factor = dff["visit_id"] / dff["visit_id"].max()
     staff_factor = dff["total_staff"] / dff["total_staff"].max()
 
-    # 🔥 Strong variation
-    noise = np.random.normal(0, 12, len(dff))   # bigger randomness
+    noise = np.random.normal(0, 12, len(dff))
 
     dff["wait_duration_min"] = (
-        15                                   # base wait
-        + (load_factor * 50)                 # strong increase
-        - (staff_factor * 25)                # strong decrease
-        + noise
+        15 + (load_factor * 50) - (staff_factor * 25) + noise
     )
 
-    # Keep realistic limits
     dff["wait_duration_min"] = dff["wait_duration_min"].clip(5, 120)
 
+    # =========================
+    # 📅 Create Month Column
+    # =========================
     dff["month"] = pd.to_datetime(dff["date"]).dt.month_name()
 
-    # Optional: Sort months correctly
     month_order = [
         "January","February","March","April","May","June",
         "July","August","September","October","November","December"
     ]
 
-    grp = dff.groupby("month").agg(
+    # =========================
+    # 📊 CREATE grp (IMPORTANT)
+    # =========================
+    grp = dff.groupby("month", as_index=False).agg(
         total_staff=("total_staff", "mean"),
         avg_wait=("wait_duration_min", "mean")
-    ).reset_index()
+    )
 
     grp["month"] = pd.Categorical(grp["month"], categories=month_order, ordered=True)
     grp = grp.sort_values("month")
 
-    fig = go.Figure()
-
-    # 🔵 Bar - Staff Count
-    fig.add_trace(go.Bar(
-        x=grp["month"],
-        y=grp["total_staff"],
-        name="Total Staff",
-        marker=dict(
-            color="#1f77b4"   # Blue
-        )
-    ))
-
-    # 🔴 Line - Avg Wait Time
-    fig.add_trace(go.Scatter(
-        x=grp["month"],
-        y=grp["avg_wait"],
-        name="Avg Wait Time",
-        mode="lines+markers",
-        line=dict(
-            color="#d62728",  # Red
-            width=3
-        ),
-        marker=dict(size=8),
-        yaxis="y2"
-    ))
-
-    # 🎨 Layout Styling
-    fig.update_layout(
-        #title="Staffing vs Wait Time Trends",
-        xaxis=dict(title="Month"),
-        
-        yaxis=dict(
-            title="Total Staff",
-            showgrid=True,
-            gridcolor="lightgray"
-        ),
-        
-        yaxis2=dict(
-            title="Avg Wait Time (mins)",
-            overlaying="y",
-            side="right"
-        ),
-
-        legend=dict(
-            x=0.01,
-            y=0.99
-        ),
-
-        template="plotly_white"   # clean dashboard look
+    # =========================
+    # 💡 BUBBLE CHART (FIXED)
+    # =========================
+    fig = px.scatter(
+        grp,
+        x="total_staff",
+        y="avg_wait",
+        size="avg_wait",
+        color="month",
+        text="month",
+        title="💡 Impact of Staffing on Wait Time"
     )
+
+    fig.update_traces(textposition="top center")
 
     st.plotly_chart(fig, use_container_width=True)
 
+
+
+
     # ───────────── BED OCCUPANCY GAUGE ─────────────
     section("Bed Occupancy %")
+
+    # =========================
+    # 📊 Capacity Calculation
+    # =========================
     capacity = dff["department_capacity"].sum()
-    occupancy = (active_patients / capacity) * 100 if capacity else 0
 
-    # Step 3: Calculate total capacity
-    capacity = dff["department_capacity"].sum()
+    # Avoid division error
+    occupancy = (active_patients / capacity) * 100 if capacity > 0 else 0
 
-    # Step 4: Now use it
-    occupancy = (active_patients / capacity) * 100 if capacity else 0
+    # Cap at 100% for UI
+    occupancy = min(occupancy, 100)
 
+    # =========================
+    # 📈 Gauge Chart
+    # =========================
     fig_gauge = go.Figure(go.Indicator(
         mode="gauge+number",
         value=occupancy,
@@ -819,155 +694,46 @@ def page_staffing(df):
         gauge={
             "axis": {"range": [0, 100]},
             "bar": {"color": "blue"},
+            "steps": [
+                {"range": [0, 50], "color": "#90EE90"},   # green
+                {"range": [50, 85], "color": "#FFD580"},  # orange
+                {"range": [85, 100], "color": "#FF7F7F"}  # red
+            ],
         }
     ))
 
     st.plotly_chart(fig_gauge, use_container_width=True)
 
 
-
-# ───────────── INSIGHTS ─────────────
-    st.markdown("---")
-    st.subheader("🔍 Staffing Insights & Recommendations")
-
-    # 👩‍⚕️ Staff Ratio Insight
-    if staff_ratio < 0.5:
-        st.error(f"🚨 Low staff-to-patient ratio ({staff_ratio:.2f}) — understaffing detected.")
-        st.markdown("""
-        **👉 Suggestions:**
-        - Hire additional staff or reallocate resources  
-        - Reduce workload per staff member  
-        - Improve shift scheduling during peak hours  
-        """)
-    elif staff_ratio > 2:
-        st.warning(f"⚠️ High staff-to-patient ratio ({staff_ratio:.2f}) — possible overstaffing.")
-        st.markdown("""
-        **👉 Suggestions:**
-        - Reallocate staff to high-demand departments  
-        - Optimize workforce distribution  
-        - Reduce idle staffing costs  
-        """)
-    else:
-        st.success(f"✅ Staff ratio ({staff_ratio:.2f}) is balanced.")
-        st.markdown("""
-        **👉 Suggestions:**
-        - Maintain current staffing levels  
-        - Monitor department-wise distribution  
-        """)
-
-    # ⏳ Staffing vs Wait Time Insight
-    avg_wait = grp["avg_wait"].mean()
-
-    if avg_wait > 40:
-        st.error(f"🚨 High wait time ({avg_wait:.1f} mins) despite staffing levels.")
-        st.markdown("""
-        **👉 Suggestions:**
-        - Improve staff allocation efficiency  
-        - Reduce delays between service stages  
-        - Focus on high-wait departments  
-        """)
-    else:
-        st.success(f"⚡ Wait time ({avg_wait:.1f} mins) is under control.")
-        st.markdown("""
-        **👉 Suggestions:**
-        - Maintain current workflow  
-        - Monitor for seasonal spikes  
-        """)
-
-    # 📅 Monthly Trend Insight
-    peak_month = grp.sort_values(by="avg_wait", ascending=False).iloc[0]
-
-    st.info(f"📅 Highest wait time observed in **{peak_month['month']}**.")
-    st.markdown("""
-    **👉 Suggestions:**
-    - Increase staffing during this period  
-    - Plan shifts proactively for peak months  
-    - Monitor demand trends in advance  
-    """)
-
-    # 🛏️ Bed Occupancy Insight
-    if occupancy > 85:
-        st.error(f"🚨 Bed occupancy at {occupancy:.1f}% — overcrowding risk.")
-        st.markdown("""
-        **👉 Suggestions:**
-        - Increase bed capacity temporarily  
-        - Speed up discharge process  
-        - Optimize patient flow  
-        """)
-    elif occupancy < 50:
-        st.warning(f"⚠️ Low bed occupancy ({occupancy:.1f}%) — underutilization.")
-        st.markdown("""
-        **👉 Suggestions:**
-        - Improve patient intake  
-        - Optimize resource utilization  
-        - Balance load across departments  
-        """)
-    else:
-        st.success(f"✅ Bed occupancy ({occupancy:.1f}%) is optimal.")
-        st.markdown("""
-        **👉 Suggestions:**
-        - Maintain current capacity planning  
-        - Monitor demand regularly  
-        """)
-
 # ─────────────────────────────────────────────────────────────────────
 # PAGE 4 — AI CHATBOT
 # ─────────────────────────────────────────────────────────────────────
 def page_ai(df):
 
-    st.title("🤖 Smart Hospital Analytics Assistant")
+    st.title("🤖 AI Hospital Insights")
 
-    if "chat" not in st.session_state:
-        st.session_state.chat = []
+    if "insights" not in st.session_state:
+        st.session_state.insights = ""
 
-      # ✅ Create doctor & nurse columns (if not already present)
-    if "doctor_count" not in df.columns:
-        df["doctor_count"] = (df["total_staff"] * 0.3).astype(int)
-        df["nurse_count"] = (df["total_staff"] * 0.7).astype(int)
+    col1, col2, col3 = st.columns(3)
 
-    user_input = st.chat_input("Ask about hospital performance...")
+    with col1:
+        if st.button("🔍 Generate AI Insights", use_container_width=True):
+            with st.spinner("Analyzing hospital data..."):
+                st.session_state.insights = generate_ai_insights(df)
 
-    def generate_response(q):
-        q = q.lower()
+    with col2:
+        if st.button("♻️ Clear Insights", use_container_width=True):
+            st.session_state.insights = ""
 
-        if "occupancy" in q:
-            val = df["is_active"].sum()
-            return f"🏥 Current occupancy is {val} patients."
+    with col3:
+        st.info("Powered by Cohere AI")
 
-        if "wait" in q:
-            val = val = df["wait_duration_min"].mean()
-            return f"⏳ Average wait time is {val:.2f} minutes."
-
-        if "department" in q:
-            top = top = df.groupby("department_name")["visit_id"].count().idxmax()
-            return f"📊 Highest patient load is in {top} department."
-
-        if "staff" in q:
-            staff = staff = df["total_staff"].sum()
-            return f"👨‍⚕️ Total staff available: {staff}"
-        
-        # 🔥 NEW: Doctor insight
-        if "doctor" in q:
-            doctors = df["doctor_count"].mean()
-            return f"👨‍⚕️ Average number of doctors available: {doctors:.0f}"
-
-        # 🔥 NEW: Nurse insight
-        if "nurse" in q:
-            nurses = df["nurse_count"].mean()
-            return f"👩‍⚕️ Average number of nurses available: {nurses:.0f}"
-
-
-        return "Try asking about occupancy, wait time, staff, doctors, nurses, or departments."
-
-    if user_input:
-        st.session_state.chat.append(("user", user_input))
-        response = generate_response(user_input)
-        st.session_state.chat.append(("bot", response))
-
-    for role, msg in st.session_state.chat:
-        with st.chat_message("assistant" if role == "bot" else "user"):
-            st.write(msg)
-
+    if st.session_state.insights:
+        st.markdown("### 📊 AI Analysis")
+        st.write(st.session_state.insights)
+    else:
+        st.info("Click 'Generate AI Insights' to analyze data.")
 # ─────────────────────────────────────────────────────────────────────
 # SIDEBAR
 # ─────────────────────────────────────────────────────────────────────
@@ -1030,6 +796,9 @@ def build_sidebar(df):
         """, unsafe_allow_html=True)
 
     return page, date_range, departments, age_groups
+
+
+
 
 
 # ─────────────────────────────────────────────────────────────────────
